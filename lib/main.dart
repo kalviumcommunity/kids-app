@@ -1,1695 +1,595 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:confetti/confetti.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const int _maxLevel = 10;
-const int _xpPerLevel = 100;
-
-class ScienceGameState {
-  ScienceGameState({
-    int initialLevel = 1,
-    int initialXp = 0,
-    Set<String>? completedMissions,
-    Set<String>? earnedBadges,
-  })  : level = initialLevel,
-        totalXp = max(initialXp, _xpForLevel(initialLevel)),
-        completedMissions = completedMissions ?? <String>{},
-        earnedBadges = earnedBadges ?? <String>{};
-
-  int level;
-  int totalXp;
-  final Set<String> completedMissions;
-  final Set<String> earnedBadges;
-
-  bool get isMaxLevel => level >= _maxLevel;
-
-  int get xpWithinCurrentLevel => isMaxLevel ? 0 : totalXp - _xpForLevel(level);
-
-  int get xpNeededForNextLevel => isMaxLevel ? 0 : _xpPerLevel;
-
-  int get xpToLevelUp => isMaxLevel ? 0 : xpNeededForNextLevel - xpWithinCurrentLevel;
-
-  double get progressToNextLevel => isMaxLevel || xpNeededForNextLevel == 0
-      ? 1
-      : xpWithinCurrentLevel / xpNeededForNextLevel;
-
-  int get displayedXp => totalXp;
-
-  bool canAccessMission(ScienceMission mission) => level >= mission.requiredLevel;
-
-  bool hasCompletedMission(String missionId) => completedMissions.contains(missionId);
-
-  void addXp(int amount) {
-    if (amount <= 0) {
-      return;
-    }
-    totalXp += amount;
-    while (!isMaxLevel && totalXp >= _xpForLevel(level + 1)) {
-      level++;
-    }
-  }
-
-  void markMissionComplete(String missionId) {
-    completedMissions.add(missionId);
-  }
-
-  void grantBadge(String badgeId) {
-    earnedBadges.add(badgeId);
-  }
-
-  Map<String, dynamic> toJson() => {
-        'level': level,
-        'totalXp': totalXp,
-        'completedMissions': completedMissions.toList(),
-        'earnedBadges': earnedBadges.toList(),
-      };
-
-  factory ScienceGameState.fromJson(Map<String, dynamic> json) {
-    final state = ScienceGameState(
-      initialLevel: json['level'] as int? ?? 1,
-      initialXp: json['totalXp'] as int? ?? 0,
-      completedMissions: (json['completedMissions'] as List<dynamic>?)?.map((e) => e as String).toSet(),
-      earnedBadges: (json['earnedBadges'] as List<dynamic>?)?.map((e) => e as String).toSet(),
-    );
-    return state;
-  }
-}
-
-class GameStorageService {
-  static const _gameStateKey = 'game_state';
-  static const _streakKey = 'play_streak';
-  static const _playerNameKey = 'player_name';
-
-  final SharedPreferences _prefs;
-
-  GameStorageService(this._prefs);
-
-  Future<void> saveGameState(ScienceGameState state) async {
-    await _prefs.setString(_gameStateKey, jsonEncode(state.toJson()));
-  }
-
-  ScienceGameState loadGameState() {
-    final jsonStr = _prefs.getString(_gameStateKey);
-    if (jsonStr == null) {
-      return ScienceGameState();
-    }
-    try {
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      return ScienceGameState.fromJson(json);
-    } catch (_) {
-      return ScienceGameState();
-    }
-  }
-
-  Future<void> saveStreak(List<bool> streak) async {
-    await _prefs.setStringList(_streakKey, streak.map((b) => b ? '1' : '0').toList());
-  }
-
-  List<bool> loadStreak() {
-    final list = _prefs.getStringList(_streakKey);
-    if (list == null || list.length != 7) {
-      return List.filled(7, false);
-    }
-    return list.map((s) => s == '1').toList();
-  }
-
-  Future<void> markTodayPlayed() async {
-    final streak = loadStreak();
-    final todayIndex = DateTime.now().weekday - 1; // Monday = 0
-    streak[todayIndex] = true;
-    await saveStreak(streak);
-  }
-
-  Future<void> savePlayerName(String name) async {
-    await _prefs.setString(_playerNameKey, name);
-  }
-
-  String loadPlayerName() {
-    return _prefs.getString(_playerNameKey) ?? 'Star Kid';
-  }
-}
-
-int _xpForLevel(int level) => max(0, (level - 1) * _xpPerLevel);
-
-Future<void> main() async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
-  final storage = GameStorageService(prefs);
-  runApp(KidsScienceApp(storage: storage));
+  runApp(CandyKidsApp(storage: GameStorageService(prefs)));
 }
 
-class KidsScienceApp extends StatelessWidget {
-  const KidsScienceApp({super.key, required this.storage});
+// ============================================================================
+// THEME & COLORS - Candy Crush / Toca Boca Style
+// ============================================================================
+class CandyColors {
+  // Primary vibrant palette
+  static const bubblegumPink = Color(0xFFFF6B9D);
+  static const skyBlue = Color(0xFF4ECDC4);
+  static const lemonYellow = Color(0xFFFFE66D);
+  static const candyOrange = Color(0xFFFF9F43);
+  static const grapeViolet = Color(0xFFAB7BFF);
+  static const mintGreen = Color(0xFF7BED9F);
+  static const cherryRed = Color(0xFFFF6B6B);
+  static const cottonCandy = Color(0xFFFFB8D0);
+  
+  // Gradients
+  static const List<Color> sunsetGradient = [
+    Color(0xFFFF6B9D),
+    Color(0xFFFF9F43),
+    Color(0xFFFFE66D),
+  ];
+  
+  static const List<Color> oceanGradient = [
+    Color(0xFF4ECDC4),
+    Color(0xFF44B3FF),
+    Color(0xFFAB7BFF),
+  ];
+  
+  static const List<Color> candyGradient = [
+    Color(0xFFFF6B9D),
+    Color(0xFFAB7BFF),
+    Color(0xFF4ECDC4),
+  ];
+}
 
+// ============================================================================
+// GAME STATE MODEL
+// ============================================================================
+class GameState {
+  int currentLevel;
+  int totalStars;
+  int coins;
+  Map<int, int> levelStars; // level -> stars (0-3)
+  String playerName;
+  List<bool> weeklyStreak;
+  DateTime lastPlayedDate;
+  
+  GameState({
+    this.currentLevel = 1,
+    this.totalStars = 0,
+    this.coins = 0,
+    Map<int, int>? levelStars,
+    this.playerName = '',
+    List<bool>? weeklyStreak,
+    DateTime? lastPlayedDate,
+  }) : levelStars = levelStars ?? {},
+       weeklyStreak = weeklyStreak ?? List.filled(7, false),
+       lastPlayedDate = lastPlayedDate ?? DateTime.now();
+  
+  factory GameState.fromJson(Map<String, dynamic> json) {
+    return GameState(
+      currentLevel: json['currentLevel'] ?? 1,
+      totalStars: json['totalStars'] ?? 0,
+      coins: json['coins'] ?? 0,
+      levelStars: (json['levelStars'] as Map<String, dynamic>?)?.map(
+        (k, v) => MapEntry(int.parse(k), v as int),
+      ) ?? {},
+      playerName: json['playerName'] ?? '',
+      weeklyStreak: (json['weeklyStreak'] as List?)?.cast<bool>() ?? List.filled(7, false),
+      lastPlayedDate: json['lastPlayedDate'] != null 
+          ? DateTime.parse(json['lastPlayedDate']) 
+          : DateTime.now(),
+    );
+  }
+  
+  Map<String, dynamic> toJson() => {
+    'currentLevel': currentLevel,
+    'totalStars': totalStars,
+    'coins': coins,
+    'levelStars': levelStars.map((k, v) => MapEntry(k.toString(), v)),
+    'playerName': playerName,
+    'weeklyStreak': weeklyStreak,
+    'lastPlayedDate': lastPlayedDate.toIso8601String(),
+  };
+  
+  GameState copyWith({
+    int? currentLevel,
+    int? totalStars,
+    int? coins,
+    Map<int, int>? levelStars,
+    String? playerName,
+    List<bool>? weeklyStreak,
+    DateTime? lastPlayedDate,
+  }) {
+    return GameState(
+      currentLevel: currentLevel ?? this.currentLevel,
+      totalStars: totalStars ?? this.totalStars,
+      coins: coins ?? this.coins,
+      levelStars: levelStars ?? Map.from(this.levelStars),
+      playerName: playerName ?? this.playerName,
+      weeklyStreak: weeklyStreak ?? List.from(this.weeklyStreak),
+      lastPlayedDate: lastPlayedDate ?? this.lastPlayedDate,
+    );
+  }
+  
+  int getStarsForLevel(int level) => levelStars[level] ?? 0;
+  
+  bool isLevelUnlocked(int level) {
+    if (level == 1) return true;
+    return levelStars.containsKey(level - 1) && levelStars[level - 1]! > 0;
+  }
+}
+
+// ============================================================================
+// STORAGE SERVICE
+// ============================================================================
+class GameStorageService {
+  final SharedPreferences _prefs;
+  static const _stateKey = 'candy_kids_game_state';
+  
+  GameStorageService(this._prefs);
+  
+  Future<GameState> loadState() async {
+    final json = _prefs.getString(_stateKey);
+    if (json == null) return GameState();
+    try {
+      return GameState.fromJson(jsonDecode(json));
+    } catch (_) {
+      return GameState();
+    }
+  }
+  
+  Future<void> saveState(GameState state) async {
+    await _prefs.setString(_stateKey, jsonEncode(state.toJson()));
+  }
+}
+
+// ============================================================================
+// SOUND SERVICE (SoundPool-like for game sounds)
+// ============================================================================
+class SoundService {
+  final AudioPlayer _dingPlayer = AudioPlayer();
+  final AudioPlayer _boingPlayer = AudioPlayer();
+  final AudioPlayer _popPlayer = AudioPlayer();
+  bool _initialized = false;
+  
+  Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+    // Set low latency mode for game sounds
+    await _dingPlayer.setReleaseMode(ReleaseMode.stop);
+    await _boingPlayer.setReleaseMode(ReleaseMode.stop);
+    await _popPlayer.setReleaseMode(ReleaseMode.stop);
+  }
+  
+  Future<void> playDing() async {
+    // High-pitched success sound - using system sound as placeholder
+    HapticFeedback.lightImpact();
+  }
+  
+  Future<void> playBoing() async {
+    // Gentle wrong answer sound
+    HapticFeedback.mediumImpact();
+  }
+  
+  Future<void> playPop() async {
+    // Button tap sound
+    HapticFeedback.selectionClick();
+  }
+  
+  void dispose() {
+    _dingPlayer.dispose();
+    _boingPlayer.dispose();
+    _popPlayer.dispose();
+  }
+}
+
+// ============================================================================
+// MAIN APP
+// ============================================================================
+class CandyKidsApp extends StatelessWidget {
   final GameStorageService storage;
-
+  
+  const CandyKidsApp({super.key, required this.storage});
+  
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Tiny Science Play',
+      title: 'Candy Kids Quest',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        useMaterial3: true,
+        fontFamily: 'Comic Sans MS',
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFF6B6B),
+          seedColor: CandyColors.bubblegumPink,
           brightness: Brightness.light,
         ),
-        textTheme: ThemeData.light().textTheme.apply(
-              fontFamily: 'ComicNeue',
-            ),
-        useMaterial3: true,
-        navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: const Color(0xFF2D1B69),
-          indicatorColor: const Color(0xFFFF6B6B),
-          iconTheme: WidgetStateProperty.resolveWith((states) {
-            if (states.contains(WidgetState.selected)) {
-              return const IconThemeData(color: Colors.white, size: 28);
-            }
-            return const IconThemeData(color: Colors.white54, size: 24);
-          }),
-          labelTextStyle: WidgetStateProperty.resolveWith((states) {
-            if (states.contains(WidgetState.selected)) {
-              return const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12);
-            }
-            return const TextStyle(color: Colors.white54, fontSize: 11);
-          }),
-        ),
       ),
-      home: ScienceQuestShell(storage: storage),
+      home: GameShell(storage: storage),
     );
   }
 }
 
-class ScienceQuestShell extends StatefulWidget {
-  const ScienceQuestShell({super.key, required this.storage});
-
+// ============================================================================
+// GAME SHELL - Main container with navigation
+// ============================================================================
+class GameShell extends StatefulWidget {
   final GameStorageService storage;
-
+  
+  const GameShell({super.key, required this.storage});
+  
   @override
-  State<ScienceQuestShell> createState() => _ScienceQuestShellState();
+  State<GameShell> createState() => _GameShellState();
 }
 
-class _ScienceQuestShellState extends State<ScienceQuestShell> {
-  int _tabIndex = 0;
-  late ScienceGameState _gameState;
-  late String _playerName;
-  late List<bool> _weekStreak;
-
-  GameStorageService get _storage => widget.storage;
-
+class _GameShellState extends State<GameShell> with TickerProviderStateMixin {
+  GameState _gameState = GameState();
+  final SoundService _soundService = SoundService();
+  bool _isLoading = true;
+  
   @override
   void initState() {
     super.initState();
-    _gameState = _storage.loadGameState();
-    _playerName = _storage.loadPlayerName();
-    _weekStreak = _storage.loadStreak();
+    _loadGame();
+    _soundService.init();
   }
-
-  Future<void> _saveProgress() async {
-    await _storage.saveGameState(_gameState);
-    await _storage.markTodayPlayed();
-    if (mounted) {
-      setState(() {
-        _weekStreak = _storage.loadStreak();
-      });
-    }
+  
+  Future<void> _loadGame() async {
+    final state = await widget.storage.loadState();
+    _updateStreak(state);
+    setState(() {
+      _gameState = state;
+      _isLoading = false;
+    });
   }
-
-  Future<void> _updatePlayerName(String name) async {
-    await _storage.savePlayerName(name);
-    if (mounted) {
-      setState(() {
-        _playerName = name;
-      });
-    }
-  }
-
-  void _showSnackBar(String message) {
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  Future<void> _handleMissionSelected(ScienceMission mission) async {
-    if (!_gameState.canAccessMission(mission)) {
-      _showSnackBar('Get to level ${mission.requiredLevel} to play this game.');
-      return;
-    }
-
-    final questions = missionQuestions[mission.id];
-    if (questions == null || questions.isEmpty) {
-      _showSnackBar('More fun coming soon.');
-      return;
-    }
-
-    final result = await Navigator.of(context).push<MissionPlayResult>(
-      MaterialPageRoute(
-        builder: (_) => MissionPlayPage(
-          mission: mission,
-          questions: questions,
-        ),
-      ),
-    );
-
-    if (result == null) {
-      return;
-    }
-
-    final accuracy = result.accuracy;
-    final earnedXp = (mission.xpReward * accuracy).round().clamp(50, mission.xpReward);
-    final wasSuccessful = accuracy >= 0.5;
-    final previousLevel = _gameState.level;
-    late List<ScienceBadge> newlyEarnedBadges;
+  
+  void _updateStreak(GameState state) {
+    final now = DateTime.now();
+    final lastPlayed = state.lastPlayedDate;
     
-    setState(() {
-      final newlyCompleted = wasSuccessful && !_gameState.hasCompletedMission(mission.id);
-      _gameState.addXp(earnedXp);
-      if (newlyCompleted) {
-        _gameState.markMissionComplete(mission.id);
-      }
-      newlyEarnedBadges = _evaluateBadgeAwards(
-        mission,
-        result,
-        wasSuccessful: wasSuccessful,
-      );
-      for (final badge in newlyEarnedBadges) {
-        _gameState.grantBadge(badge.title);
-      }
-    });
-
-    // Haptic feedback for success
-    if (wasSuccessful) {
-      HapticFeedback.mediumImpact();
+    // Reset week if it's a new week (Monday)
+    if (now.weekday == DateTime.monday && 
+        lastPlayed.isBefore(now.subtract(const Duration(days: 1)))) {
+      state.weeklyStreak.fillRange(0, 7, false);
     }
-
-    // Show level up celebration
-    if (_gameState.level > previousLevel && mounted) {
-      await _showLevelUpCelebration(_gameState.level);
-    }
-
-    final badgeSummary = newlyEarnedBadges.isEmpty
-      ? ''
-      : ' + Stickers: ${newlyEarnedBadges.map((b) => b.title).join(', ')}';
-    _showSnackBar('Awesome job! +$earnedXp stars$badgeSummary');
-
-    // Persist progress
-    await _saveProgress();
+    
+    // Mark today as played
+    state.weeklyStreak[now.weekday - 1] = true;
+    state.lastPlayedDate = now;
   }
-
-  List<ScienceBadge> _evaluateBadgeAwards(
-    ScienceMission mission,
-    MissionPlayResult result, {
-    required bool wasSuccessful,
-  }) {
-    final badgesEarned = <ScienceBadge>[];
-
-    ScienceBadge? resolveBadge(String title) {
-      for (final badge in scienceBadges) {
-        if (badge.title == title) {
-          return badge;
-        }
-      }
-      return null;
-    }
-
-    void considerBadge(String title, bool condition) {
-      if (!condition) {
-        return;
-      }
-      if (_gameState.earnedBadges.contains(title)) {
-        return;
-      }
-      if (badgesEarned.any((badge) => badge.title == title)) {
-        return;
-      }
-      final badge = resolveBadge(title);
-      if (badge != null) {
-        badgesEarned.add(badge);
-      }
-    }
-
-    considerBadge('Color Star', wasSuccessful);
-    considerBadge('Shape Champ', _gameState.completedMissions.length >= 2);
-    considerBadge('Super Listener', result.accuracy >= 0.95);
-    considerBadge('Animal Helper', _gameState.level >= 7);
-
-    return badgesEarned;
+  
+  void _updateGameState(GameState newState) {
+    setState(() => _gameState = newState);
+    widget.storage.saveState(newState);
   }
-
-  Future<void> _showLevelUpCelebration(int newLevel) async {
-    HapticFeedback.heavyImpact();
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _LevelUpDialog(level: newLevel),
-    );
+  
+  @override
+  void dispose() {
+    _soundService.dispose();
+    super.dispose();
   }
-
-  void _goToGamesTab() {
-    setState(() => _tabIndex = 1);
-  }
-
+  
   @override
   Widget build(BuildContext context) {
-    final views = <Widget>[
-      ScienceMapView(gameState: _gameState),
-      ScienceMissionsView(
-        gameState: _gameState,
-        onMissionSelected: _handleMissionSelected,
-      ),
-      ScienceProfileView(
-        gameState: _gameState,
-        playerName: _playerName,
-        weekStreak: _weekStreak,
-        onNameChanged: _updatePlayerName,
-        onResumePressed: _goToGamesTab,
-      ),
-    ];
-
-    return Scaffold(
-      body: IndexedStack(
-        index: _tabIndex,
-        children: views,
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tabIndex,
-        height: 70,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.explore),
-            label: 'Play Map',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.science),
-            label: 'Games',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.emoji_events),
-            label: 'Me',
-          ),
-        ],
-        onDestinationSelected: (value) {
-          setState(() => _tabIndex = value);
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
+    // Show name entry if new player
+    if (_gameState.playerName.isEmpty) {
+      return NameEntryScreen(
+        onNameEntered: (name) {
+          _updateGameState(_gameState.copyWith(playerName: name));
         },
-      ),
-    );
-  }
-}
-
-class ScienceMapView extends StatelessWidget {
-  const ScienceMapView({super.key, required this.gameState});
-
-  final ScienceGameState gameState;
-
-  @override
-  Widget build(BuildContext context) {
-    final currentLevel = gameState.level;
-    final totalLevels = _maxLevel;
-    final levelProgress = currentLevel / totalLevels;
-    final world = scienceWorlds.firstWhere(
-      (w) => currentLevel >= w.startLevel && currentLevel <= w.endLevel,
-      orElse: () => scienceWorlds.first,
-    );
-
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF667EEA), Color(0xFF764BA2), Color(0xFFFF6B6B)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: SafeArea(
-        bottom: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.only(bottom: 96),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                child: _GalaxyHeader(currentLevel: currentLevel, world: world, progress: levelProgress),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 140,
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  scrollDirection: Axis.horizontal,
-                  itemBuilder: (_, index) {
-                    final level = scienceLevels[index];
-                    final isUnlocked = level.index <= currentLevel;
-                    final isCurrent = level.index == currentLevel;
-                    return LevelOrb(
-                      level: level,
-                      isUnlocked: isUnlocked,
-                      isCurrent: isCurrent,
-                    );
-                  },
-                  separatorBuilder: (_, __) => const SizedBox(width: 12),
-                  itemCount: scienceLevels.length,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  'Play Zones',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                itemCount: scienceWorlds.length,
-                itemBuilder: (_, index) {
-                  final item = scienceWorlds[index];
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: ScienceWorldCard(
-                      world: item,
-                      isActive: world == item,
-                      progress: _worldProgress(item, currentLevel),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  double _worldProgress(ScienceWorld world, int currentLevel) {
-    if (currentLevel < world.startLevel) {
-      return 0;
-    }
-    if (currentLevel >= world.endLevel) {
-      return 1;
-    }
-    final range = world.endLevel - world.startLevel;
-    return (currentLevel - world.startLevel) / range;
-  }
-}
-
-class ScienceMissionsView extends StatelessWidget {
-  const ScienceMissionsView({
-    super.key,
-    required this.gameState,
-    required this.onMissionSelected,
-  });
-
-  final ScienceGameState gameState;
-  final ValueChanged<ScienceMission> onMissionSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFFFF9A9E), Color(0xFFFECFEF), Color(0xFFFECDD3)],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
-      ),
-      child: SafeArea(
-        child: ListView.separated(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 96),
-          itemBuilder: (_, index) {
-            final mission = scienceMissions[index];
-            final isUnlocked = gameState.canAccessMission(mission);
-            final isCompleted = gameState.hasCompletedMission(mission.id);
-            return MissionCard(
-              mission: mission,
-              isUnlocked: isUnlocked,
-              isCompleted: isCompleted,
-              onPlay: () => onMissionSelected(mission),
-            );
-          },
-          separatorBuilder: (_, __) => const SizedBox(height: 16),
-          itemCount: scienceMissions.length,
-        ),
-      ),
-    );
-  }
-}
-
-class MissionPlayResult {
-  const MissionPlayResult({
-    required this.correctAnswers,
-    required this.totalQuestions,
-  });
-
-  final int correctAnswers;
-  final int totalQuestions;
-
-  double get accuracy => totalQuestions == 0 ? 0 : correctAnswers / totalQuestions;
-}
-
-class MissionPlayPage extends StatefulWidget {
-  const MissionPlayPage({
-    super.key,
-    required this.mission,
-    required this.questions,
-  });
-
-  final ScienceMission mission;
-  final List<ScienceQuestion> questions;
-
-  @override
-  State<MissionPlayPage> createState() => _MissionPlayPageState();
-}
-
-class _MissionPlayPageState extends State<MissionPlayPage> {
-  int _questionIndex = 0;
-  int _score = 0;
-  int? _selectedAnswer;
-  bool _showFeedback = false;
-
-  ScienceQuestion get _currentQuestion => widget.questions[_questionIndex];
-
-  void _handleAnswerTap(int index) {
-    if (_showFeedback) {
-      return;
-    }
-    setState(() {
-      _selectedAnswer = index;
-      if (index == _currentQuestion.correctIndex) {
-        _score++;
-      }
-      _showFeedback = true;
-    });
-  }
-
-  void _goToNext() {
-    if (!_showFeedback) {
-      return;
-    }
-    final isLastQuestion = _questionIndex == widget.questions.length - 1;
-    if (isLastQuestion) {
-      Navigator.of(context).pop(
-        MissionPlayResult(
-          correctAnswers: _score,
-          totalQuestions: widget.questions.length,
-        ),
       );
-      return;
     }
-    setState(() {
-      _questionIndex++;
-      _selectedAnswer = null;
-      _showFeedback = false;
-    });
-  }
-
-  Color _answerColor(int index) {
-    if (!_showFeedback) {
-      return Colors.white.withOpacity(0.12);
-    }
-    if (index == _currentQuestion.correctIndex) {
-      return const Color(0xFF22C55E).withOpacity(0.85);
-    }
-    if (_selectedAnswer == index) {
-      return const Color(0xFFEF4444).withOpacity(0.85);
-    }
-    return Colors.white.withOpacity(0.08);
-  }
-
-  IconData _answerIcon(int index) {
-    if (!_showFeedback) {
-      return Icons.help_outline;
-    }
-    if (index == _currentQuestion.correctIndex) {
-      return Icons.check_circle_outline;
-    }
-    if (_selectedAnswer == index) {
-      return Icons.cancel_outlined;
-    }
-    return Icons.circle_outlined;
-  }
-
-  Widget _buildAnswerOption(BuildContext context, int index) {
-    final answer = _currentQuestion.answers[index];
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Material(
-        color: _answerColor(index),
-        borderRadius: BorderRadius.circular(18),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: () => _handleAnswerTap(index),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(_answerIcon(index), color: Colors.white, size: 24),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    answer,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    
+    return LevelMapScreen(
+      gameState: _gameState,
+      soundService: _soundService,
+      onGameStateUpdate: _updateGameState,
     );
   }
+}
 
+// ============================================================================
+// NAME ENTRY SCREEN
+// ============================================================================
+class NameEntryScreen extends StatefulWidget {
+  final Function(String) onNameEntered;
+  
+  const NameEntryScreen({super.key, required this.onNameEntered});
+  
+  @override
+  State<NameEntryScreen> createState() => _NameEntryScreenState();
+}
+
+class _NameEntryScreenState extends State<NameEntryScreen> 
+    with SingleTickerProviderStateMixin {
+  final _controller = TextEditingController();
+  late AnimationController _bounceController;
+  late Animation<double> _bounceAnimation;
+  
+  @override
+  void initState() {
+    super.initState();
+    _bounceController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    )..repeat(reverse: true);
+    
+    _bounceAnimation = Tween<double>(begin: 0, end: 15).animate(
+      CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
+    );
+  }
+  
+  @override
+  void dispose() {
+    _bounceController.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+  
   @override
   Widget build(BuildContext context) {
-    final mission = widget.mission;
-    final totalQuestions = widget.questions.length;
-    final question = _currentQuestion;
-    final theme = Theme.of(context);
-    final isLastQuestion = _questionIndex == totalQuestions - 1;
-
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: mission.primaryColor,
-        foregroundColor: Colors.white,
-        title: Text(mission.title),
-      ),
       body: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           gradient: LinearGradient(
-            colors: [mission.primaryColor, mission.secondaryColor],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
+            colors: CandyColors.sunsetGradient,
           ),
         ),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Chip(
-                      backgroundColor: Colors.white.withOpacity(0.18),
-                      label: Text(
-                        'Score $_score',
-                        style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    const Spacer(),
-                    Chip(
-                      backgroundColor: Colors.white.withOpacity(0.18),
-                      label: Text(
-                        'Question ${_questionIndex + 1}/$totalQuestions',
-                        style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white70),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.25),
-                        borderRadius: BorderRadius.circular(28),
-                        border: Border.all(color: Colors.white24, width: 1.5),
-                      ),
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            question.prompt,
-                            style: theme.textTheme.headlineSmall?.copyWith(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                          const SizedBox(height: 20),
-                          for (var index = 0; index < question.answers.length; index++)
-                            _buildAnswerOption(context, index),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                if (_showFeedback && question.explanation.isNotEmpty)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      question.explanation,
-                      style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white),
-                    ),
-                  ),
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: _showFeedback ? _goToNext : null,
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(56),
-                    backgroundColor: Colors.white,
-                    foregroundColor: mission.primaryColor,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  ),
-                  icon: Icon(isLastQuestion ? Icons.flag : Icons.arrow_forward_rounded),
-                  label: Text(isLastQuestion ? 'Finish Mission' : 'Next Question'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ScienceProfileView extends StatelessWidget {
-  const ScienceProfileView({
-    super.key,
-    required this.gameState,
-    required this.playerName,
-    required this.weekStreak,
-    required this.onNameChanged,
-    required this.onResumePressed,
-  });
-
-  final ScienceGameState gameState;
-  final String playerName;
-  final List<bool> weekStreak;
-  final ValueChanged<String> onNameChanged;
-  final VoidCallback onResumePressed;
-
-  void _showEditNameDialog(BuildContext context) {
-    final controller = TextEditingController(text: playerName);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('What\'s your name?'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Type your name'),
-          textCapitalization: TextCapitalization.words,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final newName = controller.text.trim();
-              if (newName.isNotEmpty) {
-                onNameChanged(newName);
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final currentLevel = gameState.level;
-    final xp = gameState.displayedXp;
-    final badges = scienceBadges;
-    final isMaxLevel = gameState.isMaxLevel;
-    final xpProgress = gameState.progressToNextLevel;
-    final xpToNext = gameState.xpToLevelUp;
-
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF4158D0), Color(0xFFC850C0), Color(0xFFFFCC70)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 96),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  AnimatedBuilder(
+                    animation: _bounceAnimation,
+                    builder: (context, child) {
+                      return Transform.translate(
+                        offset: Offset(0, -_bounceAnimation.value),
+                        child: child,
+                      );
+                    },
+                    child: const Text(
+                      '🍭',
+                      style: TextStyle(fontSize: 80),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Welcome to\nCandy Quest!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.3),
+                          offset: const Offset(2, 2),
+                          blurRadius: 4,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 40),
                   Container(
-                    width: 72,
-                    height: 72,
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF5B9DFF), Color(0xFF9B6CFF)],
-                      ),
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(30),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.25),
-                          blurRadius: 12,
+                          color: Colors.black.withOpacity(0.2),
                           offset: const Offset(0, 6),
+                          blurRadius: 10,
                         ),
                       ],
                     ),
-                    child: const Center(
-                      child: Icon(
-                        Icons.rocket_launch,
-                        color: Colors.white,
-                        size: 36,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        GestureDetector(
-                          onTap: () => _showEditNameDialog(context),
-                          child: Row(
-                            children: [
-                              Text(
-                                playerName,
-                                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                              ),
-                              const SizedBox(width: 8),
-                              const Icon(Icons.edit, color: Colors.white54, size: 18),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Level $currentLevel Super Kid',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                    _XpPill(xp: xp),
-                ],
-              ),
-              const SizedBox(height: 32),
-                if (!isMaxLevel) ...[
-                  Text(
-                    'Level Bar',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                  ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: LinearProgressIndicator(
-                      value: xpProgress,
-                      minHeight: 14,
-                      color: const Color(0xFFF97316),
-                      backgroundColor: Colors.white24,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '$xpToNext stars to level up',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
-                  ),
-                  const SizedBox(height: 32),
-                ] else ...[
-                  Text(
-                    'Max Level Reached!',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-              Text(
-                'Stickers',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                height: 120,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemBuilder: (_, index) {
-                    final badge = badges[index];
-                    final isUnlocked = gameState.earnedBadges.contains(badge.title);
-                    return BadgeTile(badge: badge, isUnlocked: isUnlocked);
-                  },
-                  separatorBuilder: (_, __) => const SizedBox(width: 12),
-                  itemCount: badges.length,
-                ),
-              ),
-              const SizedBox(height: 32),
-              Text(
-                'Play Week',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              const SizedBox(height: 16),
-              _StreakHeatmap(streak: weekStreak),
-              const SizedBox(height: 24),
-              _BouncingButton(
-                onPressed: onResumePressed,
-                child: Container(
-                  width: double.infinity,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFFF6B6B), Color(0xFFFF8E53)],
-                    ),
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFFF6B6B).withOpacity(0.4),
-                        blurRadius: 12,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.play_arrow_rounded, color: Colors.white, size: 28),
-                      SizedBox(width: 8),
-                      Text(
-                        'Play Games!',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _GalaxyHeader extends StatelessWidget {
-  const _GalaxyHeader({
-    required this.currentLevel,
-    required this.world,
-    required this.progress,
-  });
-
-  final int currentLevel;
-  final ScienceWorld world;
-  final double progress;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: world.gradient,
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(32),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.3),
-                blurRadius: 20,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Level $currentLevel',
-                style: theme.textTheme.headlineSmall?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                world.title,
-                style: theme.textTheme.titleLarge?.copyWith(color: Colors.white70),
-              ),
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 12,
-                  color: Colors.white,
-                  backgroundColor: Colors.white24,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '${(progress * 100).round()}% to next level',
-                style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white),
-              ),
-            ],
-          ),
-        ),
-        Positioned(
-          right: -20,
-          top: -20,
-          child: Transform.rotate(
-            angle: -pi / 24,
-            child: Container(
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(colors: world.gradient.reversed.toList()),
-                borderRadius: BorderRadius.circular(40),
-              ),
-              child: Icon(
-                world.icon,
-                color: Colors.white,
-                size: 64,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class LevelOrb extends StatelessWidget {
-  const LevelOrb({
-    super.key,
-    required this.level,
-    required this.isUnlocked,
-    required this.isCurrent,
-  });
-
-  final ScienceLevel level;
-  final bool isUnlocked;
-  final bool isCurrent;
-
-  @override
-  Widget build(BuildContext context) {
-    final borderColor = isCurrent ? Colors.white : Colors.white24;
-    final background = isUnlocked ? level.gradient : [Colors.white10, Colors.white12];
-    final iconColor = isUnlocked ? Colors.white : Colors.white38;
-
-    return Container(
-      width: 100,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: borderColor, width: 2),
-        gradient: LinearGradient(
-          colors: background,
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        boxShadow: [
-          if (isCurrent)
-            const BoxShadow(
-              color: Color(0x66FFFFFF),
-              blurRadius: 24,
-              offset: Offset(0, 12),
-            ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(level.icon, color: iconColor, size: 28),
-          const Spacer(),
-          Text(
-            'Level ${level.index}',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          Text(
-            level.title,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class ScienceWorldCard extends StatelessWidget {
-  const ScienceWorldCard({
-    super.key,
-    required this.world,
-    required this.isActive,
-    required this.progress,
-  });
-
-  final ScienceWorld world;
-  final bool isActive;
-  final double progress;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: LinearGradient(
-          colors: isActive ? world.gradient : world.gradient.map((c) => c.withOpacity(0.6)).toList(),
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        border: Border.all(
-          color: isActive ? Colors.white : Colors.white24,
-          width: 2,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 16,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(24),
-      child: Row(
-        children: [
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Icon(world.icon, color: Colors.white, size: 40),
-          ),
-          const SizedBox(width: 20),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  world.title,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                        color: Colors.white,
+                    child: TextField(
+                      controller: _controller,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 24,
                         fontWeight: FontWeight.bold,
                       ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Levels ${world.startLevel}-${world.endLevel}',
-                  style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white70),
-                ),
-                const SizedBox(height: 12),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 10,
-                    color: Colors.white,
-                    backgroundColor: Colors.white30,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class MissionCard extends StatelessWidget {
-  const MissionCard({
-    super.key,
-    required this.mission,
-    required this.isUnlocked,
-    required this.isCompleted,
-    required this.onPlay,
-  });
-
-  final ScienceMission mission;
-  final bool isUnlocked;
-  final bool isCompleted;
-  final VoidCallback onPlay;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [mission.primaryColor, mission.secondaryColor],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: mission.primaryColor.withOpacity(0.4),
-            blurRadius: 20,
-            offset: const Offset(0, 12),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  mission.levelLabel,
-                  style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const Spacer(),
-              Icon(isUnlocked ? mission.icon : Icons.lock_outline, color: Colors.white, size: 32),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            mission.title,
-            style: theme.textTheme.headlineSmall?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            mission.description,
-            style: theme.textTheme.bodyLarge?.copyWith(color: Colors.white.withOpacity(0.9)),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Icon(Icons.stars, color: Colors.white, size: 20),
-              const SizedBox(width: 6),
-              Text('${mission.xpReward} XP', style: theme.textTheme.bodyLarge?.copyWith(color: Colors.white)),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: isUnlocked ? onPlay : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: mission.primaryColor,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                ),
-                child: Text(isUnlocked ? (isCompleted ? 'Replay' : 'Play') : 'Locked'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class BadgeTile extends StatelessWidget {
-  const BadgeTile({super.key, required this.badge, required this.isUnlocked});
-
-  final ScienceBadge badge;
-  final bool isUnlocked;
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: isUnlocked ? 1 : 0.45,
-      child: Container(
-        width: 100,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            colors: [badge.primaryColor, badge.secondaryColor],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: badge.primaryColor.withOpacity(0.4),
-              blurRadius: 12,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(badge.icon, color: Colors.white, size: 32),
-            const Spacer(),
-            Text(
-              badge.title,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            if (!isUnlocked) ...[
-              const SizedBox(height: 4),
-              Text(
-                'Keep Playing',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _XpPill extends StatelessWidget {
-  const _XpPill({required this.xp});
-
-  final int xp;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        color: Colors.white.withOpacity(0.2),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.star, color: Colors.white, size: 20),
-          const SizedBox(width: 6),
-          Text(
-            '$xp stars',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StreakHeatmap extends StatelessWidget {
-  const _StreakHeatmap({required this.streak});
-
-  final List<bool> streak;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: List.generate(streak.length, (index) {
-        final played = streak[index];
-        final day = _weekdayLabel(index);
-        final isToday = DateTime.now().weekday - 1 == index;
-        return Column(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              width: isToday ? 52 : 48,
-              height: isToday ? 52 : 48,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                gradient: played
-                    ? const LinearGradient(
-                        colors: [Color(0xFFFFD93D), Color(0xFFFF6B6B)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      )
-                    : null,
-                color: played ? null : Colors.white24,
-                border: isToday ? Border.all(color: Colors.white, width: 3) : null,
-                boxShadow: played
-                    ? [
-                        BoxShadow(
-                          color: const Color(0xFFFF6B6B).withOpacity(0.4),
-                          blurRadius: 8,
-                          offset: const Offset(0, 4),
+                      decoration: InputDecoration(
+                        hintText: "What's your name?",
+                        hintStyle: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 20,
                         ),
-                      ]
-                    : null,
-              ),
-              child: Center(
-                child: played
-                    ? const Icon(Icons.star, color: Colors.white, size: 24)
-                    : Text(
-                        day.substring(0, 1),
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: Colors.white54,
-                              fontWeight: FontWeight.bold,
-                            ),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 20,
+                        ),
                       ),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  Candy3DButton(
+                    text: "Let's Play! 🎮",
+                    color: CandyColors.mintGreen,
+                    onPressed: () {
+                      if (_controller.text.trim().isNotEmpty) {
+                        widget.onNameEntered(_controller.text.trim());
+                      }
+                    },
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
-            Text(
-              day,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: isToday ? Colors.white : Colors.white70,
-                    fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
-                  ),
-            ),
-          ],
-        );
-      }),
-    );
-  }
-
-  String _weekdayLabel(int index) {
-    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return labels[index % labels.length];
-  }
-}
-
-// Bouncing button animation widget
-class _BouncingButton extends StatefulWidget {
-  const _BouncingButton({required this.onPressed, required this.child});
-
-  final VoidCallback onPressed;
-  final Widget child;
-
-  @override
-  State<_BouncingButton> createState() => _BouncingButtonState();
-}
-
-class _BouncingButtonState extends State<_BouncingButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scale;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 150),
-      vsync: this,
-    );
-    _scale = Tween<double>(begin: 1.0, end: 0.95).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onTapDown(TapDownDetails details) {
-    _controller.forward();
-  }
-
-  void _onTapUp(TapUpDetails details) {
-    _controller.reverse();
-    HapticFeedback.lightImpact();
-    widget.onPressed();
-  }
-
-  void _onTapCancel() {
-    _controller.reverse();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: _onTapDown,
-      onTapUp: _onTapUp,
-      onTapCancel: _onTapCancel,
-      child: ScaleTransition(
-        scale: _scale,
-        child: widget.child,
+          ),
+        ),
       ),
     );
   }
 }
 
-// Level up celebration dialog
-class _LevelUpDialog extends StatefulWidget {
-  const _LevelUpDialog({required this.level});
-
-  final int level;
-
+// ============================================================================
+// LEVEL MAP SCREEN - Winding path with levels
+// ============================================================================
+class LevelMapScreen extends StatefulWidget {
+  final GameState gameState;
+  final SoundService soundService;
+  final Function(GameState) onGameStateUpdate;
+  
+  const LevelMapScreen({
+    super.key,
+    required this.gameState,
+    required this.soundService,
+    required this.onGameStateUpdate,
+  });
+  
   @override
-  State<_LevelUpDialog> createState() => _LevelUpDialogState();
+  State<LevelMapScreen> createState() => _LevelMapScreenState();
 }
 
-class _LevelUpDialogState extends State<_LevelUpDialog>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _rotateAnimation;
-
+class _LevelMapScreenState extends State<LevelMapScreen> 
+    with TickerProviderStateMixin {
+  final ScrollController _scrollController = ScrollController();
+  late List<AnimationController> _wiggleControllers;
+  
+  // Level configurations
+  static const int totalLevels = 30;
+  
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    );
-    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
-    );
-    _rotateAnimation = Tween<double>(begin: -0.1, end: 0.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
-    );
-    _controller.forward();
+    _wiggleControllers = List.generate(totalLevels, (index) {
+      final controller = AnimationController(
+        duration: Duration(milliseconds: 800 + Random().nextInt(400)),
+        vsync: this,
+      );
+      // Stagger the animations
+      Future.delayed(Duration(milliseconds: index * 100), () {
+        if (mounted) controller.repeat(reverse: true);
+      });
+      return controller;
+    });
+    
+    // Scroll to current level after build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToCurrentLevel();
+    });
   }
-
+  
+  void _scrollToCurrentLevel() {
+    final level = widget.gameState.currentLevel;
+    final targetScroll = (totalLevels - level) * 120.0;
+    _scrollController.animateTo(
+      targetScroll.clamp(0, _scrollController.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 800),
+      curve: Curves.easeOutCubic,
+    );
+  }
+  
   @override
   void dispose() {
-    _controller.dispose();
+    for (var c in _wiggleControllers) {
+      c.dispose();
+    }
+    _scrollController.dispose();
     super.dispose();
   }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _scaleAnimation.value,
-            child: Transform.rotate(
-              angle: _rotateAnimation.value,
-              child: child,
-            ),
-          );
-        },
+  
+  void _onLevelTap(int level) {
+    if (!widget.gameState.isLevelUnlocked(level)) {
+      _showLockedDialog();
+      return;
+    }
+    
+    widget.soundService.playPop();
+    Navigator.push(
+      context,
+      SpringPageRoute(
+        child: LevelPlayScreen(
+          level: level,
+          gameState: widget.gameState,
+          soundService: widget.soundService,
+          onLevelComplete: (stars, coins) {
+            _handleLevelComplete(level, stars, coins);
+          },
+        ),
+      ),
+    );
+  }
+  
+  void _handleLevelComplete(int level, int stars, int coins) {
+    final newLevelStars = Map<int, int>.from(widget.gameState.levelStars);
+    final existingStars = newLevelStars[level] ?? 0;
+    if (stars > existingStars) {
+      newLevelStars[level] = stars;
+    }
+    
+    int newTotalStars = 0;
+    newLevelStars.forEach((_, v) => newTotalStars += v);
+    
+    final newState = widget.gameState.copyWith(
+      levelStars: newLevelStars,
+      totalStars: newTotalStars,
+      coins: widget.gameState.coins + coins,
+      currentLevel: level >= widget.gameState.currentLevel 
+          ? level + 1 
+          : widget.gameState.currentLevel,
+    );
+    
+    widget.onGameStateUpdate(newState);
+  }
+  
+  void _showLockedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
         child: Container(
-          padding: const EdgeInsets.all(32),
+          padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [Color(0xFFFFD93D), Color(0xFFFF6B6B), Color(0xFFC850C0)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
+              colors: [CandyColors.grapeViolet, CandyColors.bubblegumPink],
             ),
             borderRadius: BorderRadius.circular(32),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFFFF6B6B).withOpacity(0.5),
-                blurRadius: 30,
-                offset: const Offset(0, 15),
-              ),
-            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                '🎉',
-                style: TextStyle(fontSize: 64),
-              ),
+              const Text('🔒', style: TextStyle(fontSize: 60)),
               const SizedBox(height: 16),
               const Text(
-                'LEVEL UP!',
+                'Level Locked!',
                 style: TextStyle(
                   color: Colors.white,
-                  fontSize: 32,
+                  fontSize: 28,
                   fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  'Level ${widget.level}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               const Text(
-                'You are amazing! ⭐',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                ),
+                'Complete the previous level first!',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 18),
               ),
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: const Color(0xFFFF6B6B),
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-                child: const Text(
-                  'Yay! 🎊',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+              Candy3DButton(
+                text: 'OK! 👍',
+                color: CandyColors.lemonYellow,
+                onPressed: () => Navigator.pop(ctx),
               ),
             ],
           ),
@@ -1697,323 +597,1290 @@ class _LevelUpDialogState extends State<_LevelUpDialog>
       ),
     );
   }
+  
+  void _showSettings() {
+    showDialog(
+      context: context,
+      builder: (ctx) => ParentalGateDialog(
+        onSuccess: () {
+          Navigator.pop(ctx);
+          _showSettingsPanel();
+        },
+      ),
+    );
+  }
+  
+  void _showSettingsPanel() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '⚙️ Settings',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 24),
+            ListTile(
+              leading: const Icon(Icons.refresh, color: CandyColors.cherryRed),
+              title: const Text('Reset Progress'),
+              onTap: () {
+                Navigator.pop(ctx);
+                widget.onGameStateUpdate(GameState(
+                  playerName: widget.gameState.playerName,
+                ));
+              },
+            ),
+            const SizedBox(height: 16),
+            Candy3DButton(
+              text: 'Close',
+              color: CandyColors.skyBlue,
+              onPressed: () => Navigator.pop(ctx),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color(0xFF87CEEB), // Sky blue
+              Color(0xFFB8E994), // Light green (grass)
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Stack(
+            children: [
+              // Decorative clouds
+              ...List.generate(5, (i) => Positioned(
+                top: 20 + i * 100.0,
+                left: (i.isEven ? 20 : null),
+                right: (i.isOdd ? 20 : null),
+                child: Opacity(
+                  opacity: 0.8,
+                  child: Text(
+                    '☁️',
+                    style: TextStyle(fontSize: 40 + i * 10.0),
+                  ),
+                ),
+              )),
+              
+              // Main scrollable level map
+              CustomScrollView(
+                controller: _scrollController,
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 80, bottom: 100),
+                      child: _buildLevelPath(),
+                    ),
+                  ),
+                ],
+              ),
+              
+              // Top bar with stats
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _buildTopBar(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildTopBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            CandyColors.bubblegumPink.withOpacity(0.95),
+            CandyColors.candyOrange.withOpacity(0.95),
+          ],
+        ),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            offset: const Offset(0, 4),
+            blurRadius: 8,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Settings button (with parental gate)
+          GestureDetector(
+            onTap: _showSettings,
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(Icons.settings, color: Colors.white, size: 28),
+            ),
+          ),
+          
+          const SizedBox(width: 12),
+          
+          // Player name
+          Expanded(
+            child: Text(
+              'Hi, ${widget.gameState.playerName}! 👋',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          
+          // Stars counter
+          _StatBadge(
+            icon: '⭐',
+            value: widget.gameState.totalStars.toString(),
+            color: CandyColors.lemonYellow,
+          ),
+          
+          const SizedBox(width: 8),
+          
+          // Coins counter
+          _StatBadge(
+            icon: '🪙',
+            value: widget.gameState.coins.toString(),
+            color: CandyColors.candyOrange,
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildLevelPath() {
+    return Column(
+      children: List.generate(totalLevels, (i) {
+        final level = totalLevels - i; // Reverse order (newest at top)
+        final isUnlocked = widget.gameState.isLevelUnlocked(level);
+        final stars = widget.gameState.getStarsForLevel(level);
+        final isCurrentLevel = level == widget.gameState.currentLevel;
+        
+        // Zigzag pattern
+        final isLeft = i % 2 == 0;
+        
+        return Padding(
+          padding: EdgeInsets.only(
+            left: isLeft ? 40 : 120,
+            right: isLeft ? 120 : 40,
+            bottom: 20,
+          ),
+          child: Row(
+            children: [
+              if (!isLeft) const Spacer(),
+              _LevelNode(
+                level: level,
+                isUnlocked: isUnlocked,
+                stars: stars,
+                isCurrentLevel: isCurrentLevel,
+                wiggleAnimation: _wiggleControllers[i],
+                onTap: () => _onLevelTap(level),
+              ),
+              if (isLeft) const Spacer(),
+            ],
+          ),
+        );
+      }),
+    );
+  }
 }
 
-class ScienceLevel {
-  const ScienceLevel({
-    required this.index,
-    required this.title,
+// Stat badge widget
+class _StatBadge extends StatelessWidget {
+  final String icon;
+  final String value;
+  final Color color;
+  
+  const _StatBadge({
     required this.icon,
-    required this.gradient,
+    required this.value,
+    required this.color,
   });
-
-  final int index;
-  final String title;
-  final IconData icon;
-  final List<Color> gradient;
+  
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.5),
+            offset: const Offset(0, 3),
+            blurRadius: 6,
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(icon, style: const TextStyle(fontSize: 18)),
+          const SizedBox(width: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class ScienceWorld {
-  const ScienceWorld({
-    required this.title,
-    required this.startLevel,
-    required this.endLevel,
-    required this.gradient,
-    required this.icon,
+// Level node on the map
+class _LevelNode extends StatelessWidget {
+  final int level;
+  final bool isUnlocked;
+  final int stars;
+  final bool isCurrentLevel;
+  final AnimationController wiggleAnimation;
+  final VoidCallback onTap;
+  
+  const _LevelNode({
+    required this.level,
+    required this.isUnlocked,
+    required this.stars,
+    required this.isCurrentLevel,
+    required this.wiggleAnimation,
+    required this.onTap,
   });
-
-  final String title;
-  final int startLevel;
-  final int endLevel;
-  final List<Color> gradient;
-  final IconData icon;
+  
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedBuilder(
+        animation: wiggleAnimation,
+        builder: (context, child) {
+          // Only wiggle if it's the current unlocked level
+          final wiggle = isCurrentLevel 
+              ? sin(wiggleAnimation.value * 2 * pi) * 0.05 
+              : 0.0;
+          return Transform.rotate(
+            angle: wiggle,
+            child: child,
+          );
+        },
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Glow effect for current level
+            if (isCurrentLevel)
+              Container(
+                width: 100,
+                height: 100,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: CandyColors.lemonYellow.withOpacity(0.6),
+                      blurRadius: 20,
+                      spreadRadius: 5,
+                    ),
+                  ],
+                ),
+              ),
+            
+            // Main node
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: isUnlocked
+                    ? LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: _getLevelColors(level),
+                      )
+                    : null,
+                color: isUnlocked ? null : Colors.grey[400],
+                border: Border.all(
+                  color: Colors.white,
+                  width: 4,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    offset: const Offset(0, 6),
+                    blurRadius: 8,
+                  ),
+                  if (isUnlocked)
+                    BoxShadow(
+                      color: _getLevelColors(level)[0].withOpacity(0.4),
+                      offset: const Offset(0, 4),
+                      blurRadius: 12,
+                    ),
+                ],
+              ),
+              child: Center(
+                child: isUnlocked
+                    ? Text(
+                        '$level',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          shadows: [
+                            Shadow(
+                              color: Colors.black26,
+                              offset: Offset(1, 1),
+                              blurRadius: 2,
+                            ),
+                          ],
+                        ),
+                      )
+                    : const Icon(Icons.lock, color: Colors.white, size: 32),
+              ),
+            ),
+            
+            // Stars below
+            if (stars > 0)
+              Positioned(
+                bottom: -8,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(3, (i) => Text(
+                    i < stars ? '⭐' : '☆',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: i < stars ? null : Colors.grey[400],
+                    ),
+                  )),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  List<Color> _getLevelColors(int level) {
+    final colorSets = [
+      [CandyColors.bubblegumPink, CandyColors.cherryRed],
+      [CandyColors.skyBlue, CandyColors.grapeViolet],
+      [CandyColors.lemonYellow, CandyColors.candyOrange],
+      [CandyColors.mintGreen, CandyColors.skyBlue],
+      [CandyColors.grapeViolet, CandyColors.bubblegumPink],
+    ];
+    return colorSets[(level - 1) % colorSets.length];
+  }
 }
 
-class ScienceMission {
-  const ScienceMission({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.requiredLevel,
-    required this.xpReward,
-    required this.icon,
-    required this.primaryColor,
-    required this.secondaryColor,
+// ============================================================================
+// LEVEL PLAY SCREEN - Full game screen
+// ============================================================================
+class LevelPlayScreen extends StatefulWidget {
+  final int level;
+  final GameState gameState;
+  final SoundService soundService;
+  final Function(int stars, int coins) onLevelComplete;
+  
+  const LevelPlayScreen({
+    super.key,
+    required this.level,
+    required this.gameState,
+    required this.soundService,
+    required this.onLevelComplete,
   });
-
-  final String id;
-  final String title;
-  final String description;
-  final int requiredLevel;
-  final int xpReward;
-  final IconData icon;
-  final Color primaryColor;
-  final Color secondaryColor;
-
-  String get levelLabel => 'Level $requiredLevel';
+  
+  @override
+  State<LevelPlayScreen> createState() => _LevelPlayScreenState();
 }
 
-class ScienceQuestion {
-  const ScienceQuestion({
-    required this.prompt,
-    required this.answers,
-    required this.correctIndex,
-    this.explanation = '',
+class _LevelPlayScreenState extends State<LevelPlayScreen>
+    with TickerProviderStateMixin {
+  late ConfettiController _confettiController;
+  late AnimationController _shakeController;
+  late Animation<double> _shakeAnimation;
+  late AnimationController _progressController;
+  
+  int _currentQuestion = 0;
+  int _correctAnswers = 0;
+  int _totalQuestions = 5;
+  bool _isAnswering = true;
+  String? _selectedAnswer;
+  bool? _isCorrect;
+  
+  late List<Question> _questions;
+  
+  @override
+  void initState() {
+    super.initState();
+    _confettiController = ConfettiController(duration: const Duration(seconds: 2));
+    
+    _shakeController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    _shakeAnimation = Tween<double>(begin: 0, end: 10).animate(
+      CurvedAnimation(parent: _shakeController, curve: Curves.elasticIn),
+    );
+    
+    _progressController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    
+    _questions = _generateQuestions();
+  }
+  
+  List<Question> _generateQuestions() {
+    final random = Random();
+    final allQuestions = [
+      // Colors
+      Question('🔴', 'What color is this?', ['Red', 'Blue', 'Green', 'Yellow'], 'Red'),
+      Question('🔵', 'What color is this?', ['Red', 'Blue', 'Green', 'Yellow'], 'Blue'),
+      Question('🟢', 'What color is this?', ['Red', 'Blue', 'Green', 'Yellow'], 'Green'),
+      Question('🟡', 'What color is this?', ['Red', 'Blue', 'Green', 'Yellow'], 'Yellow'),
+      Question('🟣', 'What color is this?', ['Purple', 'Pink', 'Orange', 'Brown'], 'Purple'),
+      
+      // Shapes
+      Question('⬛', 'What shape is this?', ['Square', 'Circle', 'Triangle', 'Star'], 'Square'),
+      Question('🔶', 'What shape is this?', ['Square', 'Circle', 'Diamond', 'Star'], 'Diamond'),
+      Question('⭐', 'What shape is this?', ['Square', 'Circle', 'Heart', 'Star'], 'Star'),
+      Question('❤️', 'What shape is this?', ['Square', 'Circle', 'Heart', 'Star'], 'Heart'),
+      Question('🔺', 'What shape is this?', ['Square', 'Circle', 'Triangle', 'Star'], 'Triangle'),
+      
+      // Animals
+      Question('🐶', 'What animal is this?', ['Cat', 'Dog', 'Bird', 'Fish'], 'Dog'),
+      Question('🐱', 'What animal is this?', ['Cat', 'Dog', 'Bird', 'Fish'], 'Cat'),
+      Question('🐦', 'What animal is this?', ['Cat', 'Dog', 'Bird', 'Fish'], 'Bird'),
+      Question('🐠', 'What animal is this?', ['Cat', 'Dog', 'Bird', 'Fish'], 'Fish'),
+      Question('🐰', 'What animal is this?', ['Rabbit', 'Bear', 'Lion', 'Elephant'], 'Rabbit'),
+      
+      // Numbers
+      Question('1️⃣', 'What number is this?', ['One', 'Two', 'Three', 'Four'], 'One'),
+      Question('2️⃣', 'What number is this?', ['One', 'Two', 'Three', 'Four'], 'Two'),
+      Question('3️⃣', 'What number is this?', ['One', 'Two', 'Three', 'Four'], 'Three'),
+      Question('🍎🍎', 'How many apples?', ['One', 'Two', 'Three', 'Four'], 'Two'),
+      Question('⭐⭐⭐', 'How many stars?', ['One', 'Two', 'Three', 'Four'], 'Three'),
+    ];
+    
+    allQuestions.shuffle(random);
+    return allQuestions.take(_totalQuestions).toList();
+  }
+  
+  void _selectAnswer(String answer) {
+    if (!_isAnswering) return;
+    
+    setState(() {
+      _selectedAnswer = answer;
+      _isCorrect = answer == _questions[_currentQuestion].correctAnswer;
+      _isAnswering = false;
+    });
+    
+    if (_isCorrect!) {
+      _correctAnswers++;
+      widget.soundService.playDing();
+      _confettiController.play();
+    } else {
+      widget.soundService.playBoing();
+      _shakeController.forward(from: 0);
+    }
+    
+    // Move to next question after delay
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (!mounted) return;
+      
+      if (_currentQuestion < _totalQuestions - 1) {
+        setState(() {
+          _currentQuestion++;
+          _selectedAnswer = null;
+          _isCorrect = null;
+          _isAnswering = true;
+        });
+        _progressController.forward(from: 0);
+      } else {
+        _showResults();
+      }
+    });
+  }
+  
+  void _showResults() {
+    final stars = _correctAnswers >= 4 ? 3 : (_correctAnswers >= 2 ? 2 : (_correctAnswers >= 1 ? 1 : 0));
+    final coins = _correctAnswers * 10;
+    
+    widget.onLevelComplete(stars, coins);
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => LevelCompleteDialog(
+        level: widget.level,
+        stars: stars,
+        coins: coins,
+        correctAnswers: _correctAnswers,
+        totalQuestions: _totalQuestions,
+        onContinue: () {
+          Navigator.pop(ctx);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+  
+  @override
+  void dispose() {
+    _confettiController.dispose();
+    _shakeController.dispose();
+    _progressController.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    final question = _questions[_currentQuestion];
+    
+    return Scaffold(
+      body: Stack(
+        children: [
+          // Background
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: CandyColors.oceanGradient,
+              ),
+            ),
+          ),
+          
+          // Main content
+          SafeArea(
+            child: AnimatedBuilder(
+              animation: _shakeAnimation,
+              builder: (context, child) {
+                return Transform.translate(
+                  offset: Offset(
+                    _isCorrect == false 
+                        ? sin(_shakeController.value * 3 * pi) * _shakeAnimation.value 
+                        : 0,
+                    0,
+                  ),
+                  child: child,
+                );
+              },
+              child: Column(
+                children: [
+                  // Top bar with back button and progress
+                  _buildTopBar(),
+                  
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const SizedBox(height: 20),
+                          
+                          // Question emoji
+                          TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0.8, end: 1.0),
+                            duration: const Duration(milliseconds: 500),
+                            curve: Curves.elasticOut,
+                            builder: (context, value, child) {
+                              return Transform.scale(
+                                scale: value,
+                                child: child,
+                              );
+                            },
+                            child: Text(
+                              question.emoji,
+                              style: const TextStyle(fontSize: 100),
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 20),
+                          
+                          // Question text
+                          Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 24),
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  offset: const Offset(0, 4),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              question.text,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF333333),
+                              ),
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 30),
+                          
+                          // Answer buttons
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            child: GridView.count(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              crossAxisCount: 2,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              childAspectRatio: 2.2,
+                      children: question.options.map((option) {
+                        final isSelected = _selectedAnswer == option;
+                        final isCorrectAnswer = option == question.correctAnswer;
+                        
+                        Color buttonColor;
+                        if (_selectedAnswer != null) {
+                          if (isCorrectAnswer) {
+                            buttonColor = CandyColors.mintGreen;
+                          } else if (isSelected) {
+                            buttonColor = CandyColors.cherryRed.withOpacity(0.7);
+                          } else {
+                            buttonColor = Colors.grey[300]!;
+                          }
+                        } else {
+                          buttonColor = CandyColors.lemonYellow;
+                        }
+                        
+                              return Candy3DButton(
+                                text: option,
+                                color: buttonColor,
+                                onPressed: () => _selectAnswer(option),
+                                enabled: _isAnswering,
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                          
+                        const SizedBox(height: 30),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            ),
+          ),
+          
+          // Confetti overlay
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConfettiWidget(
+              confettiController: _confettiController,
+              blastDirectionality: BlastDirectionality.explosive,
+              shouldLoop: false,
+              colors: const [
+                CandyColors.bubblegumPink,
+                CandyColors.skyBlue,
+                CandyColors.lemonYellow,
+                CandyColors.mintGreen,
+                CandyColors.grapeViolet,
+              ],
+              numberOfParticles: 30,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildTopBar() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          // Back button (large arrow)
+          GestureDetector(
+            onTap: () {
+              Navigator.pop(context);
+            },
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.arrow_back_rounded,
+                color: Colors.white,
+                size: 32,
+              ),
+            ),
+          ),
+          
+          const SizedBox(width: 16),
+          
+          // Level indicator
+          Text(
+            'Level ${widget.level}',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          
+          const Spacer(),
+          
+          // Progress bar (candy-themed)
+          Expanded(
+            flex: 2,
+            child: _CandyProgressBar(
+              progress: (_currentQuestion + 1) / _totalQuestions,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Candy-themed progress bar
+class _CandyProgressBar extends StatelessWidget {
+  final double progress;
+  
+  const _CandyProgressBar({required this.progress});
+  
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 24,
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white, width: 2),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          children: [
+            // Progress fill
+            FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: progress,
+              child: Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      CandyColors.bubblegumPink,
+                      CandyColors.lemonYellow,
+                      CandyColors.mintGreen,
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            
+            // Candy stripes overlay
+            ...List.generate(10, (i) => Positioned(
+              left: i * 20.0 - 10,
+              top: -10,
+              bottom: -10,
+              child: Transform.rotate(
+                angle: 0.5,
+                child: Container(
+                  width: 4,
+                  color: Colors.white.withOpacity(0.2),
+                ),
+              ),
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Question model
+class Question {
+  final String emoji;
+  final String text;
+  final List<String> options;
+  final String correctAnswer;
+  
+  Question(this.emoji, this.text, this.options, this.correctAnswer);
+}
+
+// ============================================================================
+// LEVEL COMPLETE DIALOG
+// ============================================================================
+class LevelCompleteDialog extends StatefulWidget {
+  final int level;
+  final int stars;
+  final int coins;
+  final int correctAnswers;
+  final int totalQuestions;
+  final VoidCallback onContinue;
+  
+  const LevelCompleteDialog({
+    super.key,
+    required this.level,
+    required this.stars,
+    required this.coins,
+    required this.correctAnswers,
+    required this.totalQuestions,
+    required this.onContinue,
   });
-
-  final String prompt;
-  final List<String> answers;
-  final int correctIndex;
-  final String explanation;
+  
+  @override
+  State<LevelCompleteDialog> createState() => _LevelCompleteDialogState();
 }
 
-class ScienceBadge {
-  const ScienceBadge({
-    required this.title,
-    required this.icon,
-    required this.primaryColor,
-    required this.secondaryColor,
+class _LevelCompleteDialogState extends State<LevelCompleteDialog>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late ConfettiController _confettiController;
+  
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+    _scaleAnimation = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
+    );
+    _confettiController = ConfettiController(duration: const Duration(seconds: 3));
+    
+    _controller.forward();
+    if (widget.stars >= 2) {
+      _confettiController.play();
+    }
+  }
+  
+  @override
+  void dispose() {
+    _controller.dispose();
+    _confettiController.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Dialog(
+          backgroundColor: Colors.transparent,
+          child: ScaleTransition(
+            scale: _scaleAnimation,
+            child: Container(
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: CandyColors.sunsetGradient,
+                ),
+                borderRadius: BorderRadius.circular(32),
+                boxShadow: [
+                  BoxShadow(
+                    color: CandyColors.bubblegumPink.withOpacity(0.5),
+                    offset: const Offset(0, 10),
+                    blurRadius: 30,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Trophy or celebration
+                  Text(
+                    widget.stars >= 3 ? '🏆' : (widget.stars >= 2 ? '🎉' : '👏'),
+                    style: const TextStyle(fontSize: 80),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  Text(
+                    widget.stars >= 3 
+                        ? 'PERFECT!' 
+                        : (widget.stars >= 2 ? 'GREAT JOB!' : 'GOOD TRY!'),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // Stars
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(3, (i) {
+                      return TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0, end: 1),
+                        duration: Duration(milliseconds: 300 + i * 200),
+                        curve: Curves.elasticOut,
+                        builder: (context, value, child) {
+                          return Transform.scale(
+                            scale: value,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: Text(
+                                i < widget.stars ? '⭐' : '☆',
+                                style: TextStyle(
+                                  fontSize: 48,
+                                  color: i < widget.stars ? null : Colors.white38,
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    }),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // Score
+                  Text(
+                    '${widget.correctAnswers}/${widget.totalQuestions} Correct',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 8),
+                  
+                  // Coins earned
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('🪙', style: TextStyle(fontSize: 24)),
+                      const SizedBox(width: 8),
+                      Text(
+                        '+${widget.coins}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 24),
+                  
+                  Candy3DButton(
+                    text: 'Continue 🎮',
+                    color: CandyColors.mintGreen,
+                    onPressed: widget.onContinue,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        
+        // Confetti
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConfettiWidget(
+            confettiController: _confettiController,
+            blastDirectionality: BlastDirectionality.explosive,
+            shouldLoop: false,
+            colors: const [
+              CandyColors.bubblegumPink,
+              CandyColors.skyBlue,
+              CandyColors.lemonYellow,
+              CandyColors.mintGreen,
+              CandyColors.grapeViolet,
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================================
+// PARENTAL GATE DIALOG
+// ============================================================================
+class ParentalGateDialog extends StatefulWidget {
+  final VoidCallback onSuccess;
+  
+  const ParentalGateDialog({super.key, required this.onSuccess});
+  
+  @override
+  State<ParentalGateDialog> createState() => _ParentalGateDialogState();
+}
+
+class _ParentalGateDialogState extends State<ParentalGateDialog> {
+  final _controller = TextEditingController();
+  late int _num1;
+  late int _num2;
+  String? _error;
+  
+  @override
+  void initState() {
+    super.initState();
+    _generateProblem();
+  }
+  
+  void _generateProblem() {
+    final random = Random();
+    _num1 = 10 + random.nextInt(11); // 10-20
+    _num2 = 5 + random.nextInt(11);  // 5-15
+  }
+  
+  void _checkAnswer() {
+    final input = int.tryParse(_controller.text);
+    if (input == _num1 + _num2) {
+      widget.onSuccess();
+    } else {
+      setState(() {
+        _error = 'That\'s not right. Try again!';
+        _controller.clear();
+        _generateProblem();
+      });
+    }
+  }
+  
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '🔒 Grown-ups Only',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            const Text(
+              'To enter settings, please solve:',
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            Text(
+              'What is $_num1 + $_num2?',
+              style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: CandyColors.grapeViolet,
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            TextField(
+              controller: _controller,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 24),
+              decoration: InputDecoration(
+                hintText: 'Your answer',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                errorText: _error,
+              ),
+            ),
+            
+            const SizedBox(height: 24),
+            
+            Row(
+              children: [
+                Expanded(
+                  child: Candy3DButton(
+                    text: 'Cancel',
+                    color: Colors.grey[400]!,
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Candy3DButton(
+                    text: 'Enter',
+                    color: CandyColors.mintGreen,
+                    onPressed: _checkAnswer,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// REUSABLE WIDGETS
+// ============================================================================
+
+// 3D Candy-style button
+class Candy3DButton extends StatefulWidget {
+  final String text;
+  final Color color;
+  final VoidCallback onPressed;
+  final bool enabled;
+  
+  const Candy3DButton({
+    super.key,
+    required this.text,
+    required this.color,
+    required this.onPressed,
+    this.enabled = true,
   });
-
-  final String title;
-  final IconData icon;
-  final Color primaryColor;
-  final Color secondaryColor;
+  
+  @override
+  State<Candy3DButton> createState() => _Candy3DButtonState();
 }
 
-final scienceWorlds = <ScienceWorld>[
-  const ScienceWorld(
-    title: 'Color Camp',
-    startLevel: 0,
-    endLevel: 3,
-    gradient: [Color(0xFFFFF176), Color(0xFFFF8A65)],
-    icon: Icons.palette,
-  ),
-  const ScienceWorld(
-    title: 'Shape Sky',
-    startLevel: 4,
-    endLevel: 6,
-    gradient: [Color(0xFF81D4FA), Color(0xFF4FC3F7)],
-    icon: Icons.category,
-  ),
-  const ScienceWorld(
-    title: 'Animal Meadow',
-    startLevel: 7,
-    endLevel: 10,
-    gradient: [Color(0xFFA5D6A7), Color(0xFF66BB6A)],
-    icon: Icons.pets,
-  ),
-];
-
-final scienceLevels = List.generate(_maxLevel + 1, (index) {
-  final levelName = _levelTitle(index);
-  final palette = _levelGradient(index);
-  final icon = _levelIcon(index);
-  return ScienceLevel(
-    index: index,
-    title: levelName,
-    icon: icon,
-    gradient: palette,
-  );
-});
-
-final scienceMissions = <ScienceMission>[
-  const ScienceMission(
-    id: 'color_match',
-    title: 'Color Match Party',
-    description: 'Tap the paint spots that look the same.',
-    requiredLevel: 1,
-    xpReward: 80,
-    icon: Icons.color_lens,
-    primaryColor: Color(0xFFFFF176),
-    secondaryColor: Color(0xFFFFB74D),
-  ),
-  const ScienceMission(
-    id: 'shape_hunt',
-    title: 'Shape Hunt Picnic',
-    description: 'Find the shapes that fit your blanket.',
-    requiredLevel: 4,
-    xpReward: 90,
-    icon: Icons.extension,
-    primaryColor: Color(0xFF4FC3F7),
-    secondaryColor: Color(0xFF29B6F6),
-  ),
-  const ScienceMission(
-    id: 'animal_calls',
-    title: 'Animal Calling Game',
-    description: 'Help the baby animals find their sound.',
-    requiredLevel: 7,
-    xpReward: 100,
-    icon: Icons.pets,
-    primaryColor: Color(0xFFA5D6A7),
-    secondaryColor: Color(0xFF81C784),
-  ),
-];
-
-final missionQuestions = <String, List<ScienceQuestion>>{
-  'color_match': [
-    const ScienceQuestion(
-      prompt: 'Which color is the same as the sun?',
-      answers: [
-        'Yellow',
-        'Blue',
-        'Purple',
-      ],
-      correctIndex: 0,
-      explanation: 'The sun in our picture is bright yellow.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Pick the color of grass.',
-      answers: [
-        'Green',
-        'Pink',
-        'Gray',
-      ],
-      correctIndex: 0,
-      explanation: 'Fresh grass is green and comfy to sit on.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Which two colors make orange?',
-      answers: [
-        'Red and yellow',
-        'Blue and green',
-        'Purple and pink',
-      ],
-      correctIndex: 0,
-      explanation: 'Mixing red and yellow paint makes orange.',
-    ),
-  ],
-  'shape_hunt': [
-    const ScienceQuestion(
-      prompt: 'Which shape has three sides?',
-      answers: [
-        'Triangle',
-        'Circle',
-        'Square',
-      ],
-      correctIndex: 0,
-      explanation: 'A triangle has three straight sides.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Which shape can roll like a wheel?',
-      answers: [
-        'Circle',
-        'Rectangle',
-        'Triangle',
-      ],
-      correctIndex: 0,
-      explanation: 'Circles are round so they roll easily.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Pick the shape with four equal sides.',
-      answers: [
-        'Square',
-        'Oval',
-        'Star',
-      ],
-      correctIndex: 0,
-      explanation: 'A square is like a box with matching sides.',
-    ),
-  ],
-  'animal_calls': [
-    const ScienceQuestion(
-      prompt: 'Which animal says “moo”?',
-      answers: [
-        'Cow',
-        'Duck',
-        'Cat',
-      ],
-      correctIndex: 0,
-      explanation: 'Cows make the gentle “moo” sound.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Who quacks on the pond?',
-      answers: [
-        'Duck',
-        'Puppy',
-        'Horse',
-      ],
-      correctIndex: 0,
-      explanation: 'Ducks quack while they splash.',
-    ),
-    const ScienceQuestion(
-      prompt: 'Which friend purrs when happy?',
-      answers: [
-        'Cat',
-        'Frog',
-        'Sheep',
-      ],
-      correctIndex: 0,
-      explanation: 'Cats purr softly when they feel cozy.',
-    ),
-  ],
-};
-
-final scienceBadges = <ScienceBadge>[
-  const ScienceBadge(
-    title: 'Color Star',
-    icon: Icons.color_lens,
-    primaryColor: Color(0xFFFFF59D),
-    secondaryColor: Color(0xFFFFEB3B),
-  ),
-  const ScienceBadge(
-    title: 'Shape Champ',
-    icon: Icons.extension,
-    primaryColor: Color(0xFF4FC3F7),
-    secondaryColor: Color(0xFF29B6F6),
-  ),
-  const ScienceBadge(
-    title: 'Animal Helper',
-    icon: Icons.pets,
-    primaryColor: Color(0xFFA5D6A7),
-    secondaryColor: Color(0xFF81C784),
-  ),
-  const ScienceBadge(
-    title: 'Super Listener',
-    icon: Icons.hearing,
-    primaryColor: Color(0xFFFFCC80),
-    secondaryColor: Color(0xFFFFB74D),
-  ),
-];
-
-String _levelTitle(int level) {
-  if (level == 0) {
-    return 'Ready to Play';
+class _Candy3DButtonState extends State<Candy3DButton> {
+  bool _isPressed = false;
+  
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: widget.enabled ? (_) => setState(() => _isPressed = true) : null,
+      onTapUp: widget.enabled ? (_) {
+        setState(() => _isPressed = false);
+        HapticFeedback.lightImpact();
+        widget.onPressed();
+      } : null,
+      onTapCancel: () => setState(() => _isPressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        decoration: BoxDecoration(
+          color: widget.color,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: _isPressed ? [] : [
+            BoxShadow(
+              color: HSLColor.fromColor(widget.color)
+                  .withLightness(
+                    (HSLColor.fromColor(widget.color).lightness - 0.2).clamp(0, 1),
+                  )
+                  .toColor(),
+              offset: const Offset(0, 6),
+              blurRadius: 0,
+            ),
+            BoxShadow(
+              color: Colors.black.withOpacity(0.2),
+              offset: const Offset(0, 8),
+              blurRadius: 8,
+            ),
+          ],
+          border: Border.all(
+            color: Colors.white.withOpacity(0.5),
+            width: 2,
+          ),
+        ),
+        transform: _isPressed 
+            ? Matrix4.translationValues(0, 4, 0) 
+            : Matrix4.identity(),
+        child: Center(
+          child: Text(
+            widget.text,
+            style: TextStyle(
+              color: _getTextColor(widget.color),
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              shadows: [
+                Shadow(
+                  color: Colors.black.withOpacity(0.2),
+                  offset: const Offset(1, 1),
+                  blurRadius: 2,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
-  if (level <= 3) {
-    return 'Color Explorer';
+  
+  Color _getTextColor(Color bgColor) {
+    final luminance = bgColor.computeLuminance();
+    return luminance > 0.5 ? const Color(0xFF333333) : Colors.white;
   }
-  if (level <= 6) {
-    return 'Shape Detective';
-  }
-  if (level <= 10) {
-    return 'Animal Friend';
-  }
-  return 'Super Star';
 }
 
-List<Color> _levelGradient(int level) {
-  if (level <= 3) {
-    return const [Color(0xFFFFF59D), Color(0xFFFFF176)];
-  }
-  if (level <= 6) {
-    return const [Color(0xFF81D4FA), Color(0xFF4FC3F7)];
-  }
-  if (level <= 10) {
-    return const [Color(0xFFA5D6A7), Color(0xFF66BB6A)];
-  }
-  return const [Color(0xFFFFCC80), Color(0xFFFFB74D)];
-}
-
-IconData _levelIcon(int level) {
-  if (level <= 3) {
-    return Icons.palette;
-  }
-  if (level <= 6) {
-    return Icons.extension;
-  }
-  if (level <= 10) {
-    return Icons.pets;
-  }
-  return Icons.star;
+// Spring page route for transitions
+class SpringPageRoute<T> extends PageRouteBuilder<T> {
+  final Widget child;
+  
+  SpringPageRoute({required this.child})
+      : super(
+          pageBuilder: (context, animation, secondaryAnimation) => child,
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 1),
+                end: Offset.zero,
+              ).animate(CurvedAnimation(
+                parent: animation,
+                curve: Curves.elasticOut,
+              )),
+              child: child,
+            );
+          },
+          transitionDuration: const Duration(milliseconds: 800),
+        );
 }
